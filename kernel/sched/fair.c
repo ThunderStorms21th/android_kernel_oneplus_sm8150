@@ -7512,11 +7512,12 @@ enum fastpaths {
 };
 
 static inline int find_best_target(struct task_struct *p, int *backup_cpu,
-				   bool boosted, bool prefer_idle,
+				   bool boosted, bool prefer_idle, bool crucial,
 				   struct find_best_target_env *fbt_env)
 {
 	unsigned long min_util = boosted_task_util(p);
 	unsigned long target_capacity = ULONG_MAX;
+	unsigned long crucial_capacity = 0;
 	unsigned long min_wake_util = ULONG_MAX;
 	unsigned long target_max_spare_cap = 0;
 	unsigned long target_util = ULONG_MAX;
@@ -7528,6 +7529,7 @@ static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 	struct sched_group *sg;
 	int best_active_cpu = -1;
 	int best_idle_cpu = -1;
+	int best_crucial_cpu = -1;
 	int target_cpu = -1;
 	int cpu, i;
 	long spare_wake_cap, most_spare_wake_cap = 0;
@@ -7661,6 +7663,19 @@ static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 			 * enqueued here.
 			 */
 			spare_cap = capacity_orig - new_util;
+
+			/*
+			 * Find the CPU with the largest spare capacity in all
+			 * sched groups.
+			 */
+			if (crucial) {
+				if (spare_cap < crucial_capacity)
+					continue;
+
+				crucial_capacity = spare_cap;
+				best_crucial_cpu = i;
+				continue;
+			}
 
 			if (idle_cpu(i))
 				idle_idx = idle_get_state_idx(cpu_rq(i));
@@ -7898,6 +7913,9 @@ static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 		}
 
 	} while (sg = sg->next, sg != sd->groups);
+
+	if (crucial && (best_crucial_cpu != -1))
+		return best_crucial_cpu;
 
 	if (best_idle_cpu != -1 && !is_packing_eligible(p, target_cpu, fbt_env,
 					active_cpus_count, best_idle_cstate,
@@ -8272,7 +8290,7 @@ static int find_energy_efficient_cpu(struct sched_domain *sd,
 				break;
 		}
 	} else {
-		int prefer_idle;
+		int prefer_idle, crucial;
 
 		/*
 		 * give compiler a hint that if sched_features
@@ -8282,6 +8300,9 @@ static int find_energy_efficient_cpu(struct sched_domain *sd,
 		prefer_idle = sched_feat(EAS_PREFER_IDLE) ?
 				(schedtune_prefer_idle(p) > 0) : 0;
 
+		crucial = sched_feat(EAS_CRUCIAL) ?
+				(schedtune_crucial(p) > 0) : 0;
+
 		eenv->max_cpu_count = EAS_CPU_BKP + 1;
 
 		fbt_env.rtg_target = rtg_target;
@@ -8290,7 +8311,8 @@ static int find_energy_efficient_cpu(struct sched_domain *sd,
 
 		/* Find a cpu with sufficient capacity */
 		target_cpu = find_best_target(p, &eenv->cpu[EAS_CPU_BKP].cpu_id,
-					      boosted, prefer_idle, &fbt_env);
+					      boosted, prefer_idle, crucial,
+					      &fbt_env);
 		if (target_cpu < 0)
 			goto out;
 
